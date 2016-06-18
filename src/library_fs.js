@@ -943,6 +943,68 @@ mergeInto(LibraryManager.library, {
         timestamp: Math.max(atime, mtime)
       });
     },
+    pipe2: function(pipefd, flags, fd_start, fd_end) {
+        if(flags & ~({{{ cDefine('O_CLOEXEC') }}} | {{{ cDefine('O_NONBLOCK') }}})) {
+          throw new FS.ErrnoError(ERRNO_CODES.EINVAL);
+        }
+        var pipe = {
+          data: Array({{{ cDefine('PIPE_BUF') }}}),
+          start: 0,
+          length: 0,
+        };
+        var read_stream = FS.createStream({
+          pipe: pipe,
+          node: {
+            mode: {{{ cDefine('O_RDONLY') }}}
+          },
+          seekable: false,
+          flags: flags | {{{ cDefine('O_RDONLY') }}},
+          stream_ops: {
+            read: function (stream, buffer, offset, length, position) {
+              for(var i = 0; i < length; ++i) {
+                if(stream.pipe.length == 0) {
+                  if(stream.flags & {{{ cDefine('O_NONBLOCK') }}}) {
+                    throw new FS.ErrnoError(ERRNO_CODES.EWOULDBLOCK);
+                  } else {
+                    _abort();
+                  }
+                }
+                buffer[offset + i] = stream.pipe.data[stream.pipe.start++];
+                --stream.pipe.length;
+                if(stream.pipe.start == {{{ cDefine('PIPE_BUF') }}}) {
+                  stream.pipe.start = 0;
+                }
+              }
+            }
+          }
+        }, fd_start, fd_end);
+        var write_stream = FS.createStream({
+          pipe: pipe,
+          node: {
+            mode: {{{ cDefine('O_WRONLY') }}}
+          },
+          seekable: false,
+          flags: flags | {{{ cDefine('O_WRONLY') }}},
+          stream_ops: {
+            write: function (stream, buffer, offset, length, position) {
+              for(var i = 0; i < length; ++i) {
+                if(stream.pipe.length == {{{ cDefine('PIPE_BUF') }}}) {
+                  if(stream.flags & {{{ cDefine('O_NONBLOCK') }}}) {
+                    throw new FS.ErrnoError(ERRNO_CODES.EWOULDBLOCK);
+                  } else {
+                    _abort();
+                  }
+                }
+                stream.pipe.data[(stream.pipe.start + stream.pipe.length) % {{{ cDefine('PIPE_BUF') }}}] = buffer[offset + i];
+                ++stream.pipe.length;
+              }
+            }
+          }
+        }, fd_start, fd_end);
+        setValue(pipefd, read_stream.fd, 'i32');
+        setValue(pipefd + 4, write_stream.fd, 'i32');
+        return 0;
+    },
     open: function(path, flags, mode, fd_start, fd_end) {
       if (path === "") {
         throw new FS.ErrnoError(ERRNO_CODES.ENOENT);

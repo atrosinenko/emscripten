@@ -288,7 +288,10 @@ var SyscallsLibrary = {
     var old = SYSCALLS.getStreamFromFD();
     return FS.open(old.path, old.flags, 0).fd;
   },
-  __syscall42: '__syscall51',      // pipe
+  __syscall42: function(which, varargs) { // pipe
+    var pipefd = SYSCALLS.get();
+    return FS.pipe2(pipefd, 0);
+  },
   __syscall51: function(which, varargs) { // acct
     return -ERRNO_CODES.ENOSYS; // unsupported features
   },
@@ -1212,7 +1215,8 @@ var SyscallsLibrary = {
     return SYSCALLS.doDup(old.path, old.flags, suggestFD);
   },
   __syscall331: function(which, varargs) { // pipe2
-    return -ERRNO_CODES.ENOSYS; // unsupported feature
+    var pipefd = SYSCALLS.get(), flags = SYSCALLS.get();
+    return FS.pipe2(pipefd, flags);
   },
   __syscall333: function(which, varargs) { // preadv
 #if SYSCALL_DEBUG
