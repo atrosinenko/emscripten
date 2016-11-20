@@ -839,7 +839,7 @@ var SyscallsLibrary = {
     Module.printErr('warning: untested syscall');
 #endif
     var stream = SYSCALLS.getStreamFromFD(), buf = SYSCALLS.get(), count = SYSCALLS.get(), zero = SYSCALLS.getZero(), offset = SYSCALLS.get64();
-    return FS.write(stream, {{{ heapAndOffset('HEAP8', 'buf') }}}, nbyte, offset);
+    return FS.write(stream, {{{ heapAndOffset('HEAP8', 'buf') }}}, count, offset);
   },
   __syscall183: function(which, varargs) { // getcwd
     var buf = SYSCALLS.get(), size = SYSCALLS.get();
@@ -864,9 +864,11 @@ var SyscallsLibrary = {
     var addr = SYSCALLS.get(), len = SYSCALLS.get(), prot = SYSCALLS.get(), flags = SYSCALLS.get(), fd = SYSCALLS.get(), off = SYSCALLS.get()
     off <<= 12; // undo pgoffset
     var ptr;
+    var malloc;
     var allocated = false;
     if (fd === -1) {
-      ptr = _malloc(len);
+      malloc = _malloc(len + 4096);
+      ptr = ((malloc + 4095) >> 12) << 12;
       if (!ptr) return -ERRNO_CODES.ENOMEM;
       _memset(ptr, 0, len);
       allocated = true;
@@ -875,9 +877,10 @@ var SyscallsLibrary = {
       if (!info) return -ERRNO_CODES.EBADF;
       var res = FS.mmap(info, HEAPU8, addr, len, off, prot, flags);
       ptr = res.ptr;
+      malloc = ptr;
       allocated = res.allocated;
     }
-    SYSCALLS.mappings[ptr] = { malloc: ptr, len: len, allocated: allocated, fd: fd, flags: flags };
+    SYSCALLS.mappings[ptr] = { malloc: malloc, len: len, allocated: allocated, fd: fd, flags: flags };
     return ptr;
   },
   __syscall193: function(which, varargs) { // truncate64

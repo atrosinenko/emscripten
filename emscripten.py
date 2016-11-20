@@ -630,7 +630,7 @@ function _emscripten_asm_const_%s(%s) {
     need_asyncify = '_emscripten_alloc_async_context' in exported_implemented_functions
     if need_asyncify:
       basic_vars += ['___async', '___async_unwind', '___async_retval', '___async_cur_frame']
-      asm_runtime_funcs += ['setAsync']
+      asm_runtime_funcs += ['setAsync','getAsync']
 
     if settings.get('EMTERPRETIFY'):
       asm_runtime_funcs += ['emterpret']
@@ -957,6 +957,9 @@ function establishStackSpace(stackBase, stackMax) {
 ''' + ('''
 function setAsync() {
   ___async = 1;
+}
+function getAsync() {
+  return ___async;
 }''' if need_asyncify else '') + ('''
 function emterpret(pc) { // this will be replaced when the emterpreter code is generated; adding it here allows validation until then
   pc = pc | 0;

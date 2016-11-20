@@ -960,9 +960,15 @@ mergeInto(LibraryManager.library, {
           seekable: false,
           flags: flags | {{{ cDefine('O_RDONLY') }}},
           stream_ops: {
+            poll: function (stream) {
+              return (stream.pipe.length != 0) ? ({{{ cDefine('POLLRDNORM') }}} | {{{ cDefine('POLLIN') }}}) : 0;
+            },
             read: function (stream, buffer, offset, length, position) {
+              var res = 0;
               for(var i = 0; i < length; ++i) {
                 if(stream.pipe.length == 0) {
+                  if(res > 0)
+                    return res;
                   if(stream.flags & {{{ cDefine('O_NONBLOCK') }}}) {
                     throw new FS.ErrnoError(ERRNO_CODES.EWOULDBLOCK);
                   } else {
@@ -971,10 +977,12 @@ mergeInto(LibraryManager.library, {
                 }
                 buffer[offset + i] = stream.pipe.data[stream.pipe.start++];
                 --stream.pipe.length;
+                ++res;
                 if(stream.pipe.start == {{{ cDefine('PIPE_BUF') }}}) {
                   stream.pipe.start = 0;
                 }
               }
+              return res;
             }
           }
         }, fd_start, fd_end);
@@ -998,6 +1006,7 @@ mergeInto(LibraryManager.library, {
                 stream.pipe.data[(stream.pipe.start + stream.pipe.length) % {{{ cDefine('PIPE_BUF') }}}] = buffer[offset + i];
                 ++stream.pipe.length;
               }
+              return length;
             }
           }
         }, fd_start, fd_end);
