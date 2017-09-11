@@ -92,6 +92,7 @@ mergeInto(LibraryManager.library, {
     //  this function is called when a possibly async function turned out to be sync
     //  just undo a recent emscripten_alloc_async_context
     ctx = ctx|0;
+    ___async_cur_frame = ((ctx|0) - 8)|0;
 #if ASSERTIONS
     assert((((___async_cur_frame + 8)|0) == (ctx|0))|0);
 #endif
