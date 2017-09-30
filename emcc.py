@@ -465,7 +465,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       exit(subprocess.call(cmd))
     else:
       only_object = '-c' in cmd
-      for i in range(len(cmd)-1):
+      for i in reversed(range(len(cmd)-1)): # Last -o directive should take precedence, if multiple are specified
         if cmd[i] == '-o':
           if not only_object:
             cmd[i+1] += '.js'
@@ -528,10 +528,11 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
 
   # Check if a target is specified
   target = None
-  for i in range(len(sys.argv)-1):
+  for i in range(len(sys.argv)):
     if sys.argv[i].startswith('-o='):
       raise Exception('Invalid syntax: do not use -o=X, use -o X')
 
+  for i in reversed(range(len(sys.argv)-1)): # Last -o directive should take precedence, if multiple are specified
     if sys.argv[i] == '-o':
       target = sys.argv[i+1]
       sys.argv = sys.argv[:i] + sys.argv[i+2:]
@@ -942,7 +943,6 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         shared.Settings.RELOCATABLE = 1
         shared.Settings.PRECISE_I64_MATH = 1 # other might use precise math, we need to be able to print it
         assert not options.use_closure_compiler, 'cannot use closure compiler on shared modules'
-        assert not shared.Settings.ALLOW_MEMORY_GROWTH, 'memory growth is not supported with shared modules yet'
 
       if shared.Settings.EMULATE_FUNCTION_POINTER_CASTS:
         shared.Settings.ALIASING_FUNCTION_POINTERS = 0
@@ -1178,6 +1178,10 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
             if final_suffix in JS_CONTAINING_SUFFIXES and not shared.Settings.NO_EXIT_RUNTIME:
               logging.warning('you should enable  -s NO_EXIT_RUNTIME=1  so that EVAL_CTORS can work at full efficiency (it gets rid of atexit calls which might disrupt EVAL_CTORS)')
 
+      # memory growth does not work in dynamic linking, except for wasm
+      if not shared.Settings.WASM and (shared.Settings.MAIN_MODULE or shared.Settings.SIDE_MODULE):
+        assert not shared.Settings.ALLOW_MEMORY_GROWTH, 'memory growth is not supported with shared asm.js modules'
+
       if shared.Settings.ALLOW_MEMORY_GROWTH and shared.Settings.ASM_JS == 1:
         # this is an issue in asm.js, but not wasm
         if not shared.Settings.WASM or 'asmjs' in shared.Settings.BINARYEN_METHOD:
@@ -1230,6 +1234,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       shared.Settings.OPT_LEVEL = options.opt_level
       shared.Settings.DEBUG_LEVEL = options.debug_level
       shared.Settings.PROFILING_FUNCS = options.profiling_funcs
+      shared.Settings.SOURCE_MAP_BASE = options.source_map_base or ''
 
       ## Compile source code to bitcode
 
@@ -1274,6 +1279,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         if options.debug_level == 4 or not (final_suffix in JS_CONTAINING_SUFFIXES and options.js_opts):
           newargs.append('-g') # preserve LLVM debug info
           options.debug_level = 4
+          shared.Settings.DEBUG_LEVEL = 4
 
       # Bitcode args generation code
       def get_bitcode_args(input_files):
@@ -1538,9 +1544,12 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         # we also received wast and wasm at this stage
         temp_basename = unsuffixed(final)
         wast_temp = temp_basename + '.wast'
+        wasm_temp = temp_basename + '.wasm'
         shutil.move(wast_temp, wasm_text_target)
-        shutil.move(temp_basename + '.wasm', wasm_binary_target)
+        shutil.move(wasm_temp, wasm_binary_target)
         open(wasm_text_target + '.mappedGlobals', 'w').write('{}') # no need for mapped globals for now, but perhaps some day
+        if options.debug_level >= 4:
+          shutil.move(wasm_temp + '.map', wasm_binary_target + '.map')
 
       if shared.Settings.CYBERDWARF:
         cd_target = final + '.cd'
@@ -2280,7 +2289,7 @@ def do_binaryen(final, target, asm_target, options, memfile, wasm_binary_target,
         if options.debug_level >= 4:
           cmd += ['--source-map=' + wasm_binary_target + '.map']
           if options.source_map_base:
-            cmd += ['--source-map-url=' + options.source_map_base + wasm_binary_target + '.map']
+            cmd += ['--source-map-url=' + options.source_map_base + os.path.basename(wasm_binary_target) + '.map']
       logging.debug('wasm-as (text => binary): ' + ' '.join(cmd))
       subprocess.check_call(cmd)
     if import_mem_init:

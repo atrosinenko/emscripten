@@ -2282,12 +2282,10 @@ The current type of b is: 9
     self.do_run(main, 'supp: 54,2\nmain: 56\nsupp see: 543\nmain see: 76\nok.')
 
   def can_dlfcn(self):
-    if Settings.ALLOW_MEMORY_GROWTH == 1: return self.skip('no dlfcn with memory growth yet')
-    if self.is_wasm_backend(): return self.skip('no shared modules in wasm backend')
-    # V8 doesn't support mismatch between table import decl initial size and imported table runtime size.
-    # See https://bugs.chromium.org/p/v8/issues/detail?id=5795
-    if self.is_wasm():
-      self.banned_js_engines = [V8_ENGINE, NODE_JS]
+    if Settings.ALLOW_MEMORY_GROWTH == 1 and not self.is_wasm():
+      return self.skip('no dlfcn with memory growth (without wasm)')
+    if self.is_wasm_backend():
+      return self.skip('no shared modules in wasm backend')
     return True
 
   def prep_dlfcn_lib(self):
@@ -3107,16 +3105,23 @@ var Module = {
       self.dylink_test(side, main, expected, header, main_emcc_args, force_c, need_reverse=False)
 
   def test_dylink_basics(self):
-    self.dylink_test('''
-      #include <stdio.h>
-      extern int sidey();
-      int main() {
-        printf("other says %d.", sidey());
-        return 0;
-      }
-    ''', '''
-      int sidey() { return 11; }
-    ''', 'other says 11.')
+    def test():
+      self.dylink_test('''
+        #include <stdio.h>
+        extern int sidey();
+        int main() {
+          printf("other says %d.", sidey());
+          return 0;
+        }
+      ''', '''
+        int sidey() { return 11; }
+      ''', 'other says 11.')
+    test()
+
+    if self.is_wasm():
+      print 'test memory growth with dynamic linking, which works in wasm'
+      Settings.ALLOW_MEMORY_GROWTH = 1
+      test()
 
   def test_dylink_floats(self):
     self.dylink_test('''
@@ -4130,6 +4135,18 @@ def process(filename):
   def test_getdents64(self):
     src = open(path_from_root('tests', 'fs', 'test_getdents64.cpp'), 'r').read()
     self.do_run(src, '..')
+
+  def test_getdents64_special_cases(self):
+    Building.COMPILER_TEST_OPTS += ['-std=c++11']
+    src = path_from_root('tests', 'fs', 'test_getdents64_special_cases.cpp')
+    out = path_from_root('tests', 'fs', 'test_getdents64_special_cases.out')
+    self.do_run_from_file(src, out, assert_identical=True)
+
+  def test_getcwd_with_non_ascii_name(self):
+    src = path_from_root('tests', 'fs', 'test_getcwd_with_non_ascii_name.cpp')
+    out = path_from_root('tests', 'fs', 'test_getcwd_with_non_ascii_name.out')
+    Building.COMPILER_TEST_OPTS += ['-std=c++11']
+    self.do_run_from_file(src, out, assert_identical=True)
 
   def test_fwrite_0(self):
     test_path = path_from_root('tests', 'core', 'test_fwrite_0')
@@ -6845,7 +6862,7 @@ Module.printErr = Module['printErr'] = function(){};
 
   @no_emterpreter
   def test_source_map(self):
-    if NODE_JS not in JS_ENGINES: return self.skip('sourcemapper requires Node to run')
+    if not jsrun.check_engine(NODE_JS): return self.skip('sourcemapper requires Node to run')
     if '-g' not in Building.COMPILER_TEST_OPTS: Building.COMPILER_TEST_OPTS.append('-g')
 
     src = '''
@@ -6949,7 +6966,7 @@ Module.printErr = Module['printErr'] = function(){};
   def test_exception_source_map(self):
     if self.is_wasm(): return self.skip('wasmifying destroys debug info and stack tracability')
     if '-g4' not in Building.COMPILER_TEST_OPTS: Building.COMPILER_TEST_OPTS.append('-g4')
-    if NODE_JS not in JS_ENGINES: return self.skip('sourcemapper requires Node to run')
+    if not jsrun.check_engine(NODE_JS): return self.skip('sourcemapper requires Node to run')
 
     src = '''
       #include <stdio.h>
