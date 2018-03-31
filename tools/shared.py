@@ -487,8 +487,7 @@ def check_sanity(force=False):
   try:
     if os.environ.get(EMCC_SKIP_SANITY_CHECK_NAME) == '1':
       return
-    if EMCC_SKIP_SANITY_CHECK_NAME not in os.environ:
-      os.environ[EMCC_SKIP_SANITY_CHECK_NAME] = '1'
+    os.environ[EMCC_SKIP_SANITY_CHECK_NAME] = '1'
 
     reason = None
     if not CONFIG_FILE:
@@ -1508,9 +1507,6 @@ class Building(object):
 
   @staticmethod
   def configure(args, stdout=None, stderr=None, env=None):
-    # Check once and cache results
-    check_sanity()
-
     if not args:
       return
     if env is None:
@@ -1537,9 +1533,6 @@ class Building(object):
 
   @staticmethod
   def make(args, stdout=None, stderr=None, env=None):
-    # Check once and cache results
-    check_sanity()
-
     if env is None:
       env = Building.get_building_env()
     if not args:

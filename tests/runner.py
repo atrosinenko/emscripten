@@ -191,6 +191,12 @@ class RunnerCore(unittest.TestCase):
     # Explicitly set dedicated temporary directory for parallel tests
     os.environ['EMCC_TEMP_DIR'] = self.temp_dir
 
+  @classmethod
+  def setUpClass(self):
+    super(unittest.TestCase, self).setUpClass()
+    # Cache the sanity check results
+    check_sanity(force=True)
+
   def setUp(self):
     Settings.reset()
 
@@ -219,9 +225,6 @@ class RunnerCore(unittest.TestCase):
       for temp_file in os.listdir(TEMP_DIR):
         if temp_file.endswith('.ll'):
           self.has_prev_ll = True
-
-    # Cache check results
-    check_sanity(force=True)
 
   def tearDown(self):
     if not self.save_dir:

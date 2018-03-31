@@ -47,7 +47,6 @@ class sanity(RunnerCore):
     print('<<<')
     print()
 
-    os.environ[EMCC_SKIP_SANITY_CHECK_NAME] = '-1'
     assert os.path.exists(CONFIG_FILE), 'To run these tests, we need a (working!) %s file to already exist' % EM_CONFIG
     assert not os.environ.get('EMCC_DEBUG'), 'do not run sanity checks in debug mode!'
     assert not os.environ.get('EMCC_WASM_BACKEND'), 'do not force wasm backend either way in sanity checks!'
@@ -55,12 +54,13 @@ class sanity(RunnerCore):
   @classmethod
   def tearDownClass(self):
     super(RunnerCore, self).tearDownClass()
-    if EMCC_SKIP_SANITY_CHECK_NAME in os.environ:
-      del os.environ[EMCC_SKIP_SANITY_CHECK_NAME]
-      check_sanity(force=True)
+    # Restore cached sanity check result
+    check_sanity(force=True)
 
   def setUp(self):
     wipe()
+    if EMCC_SKIP_SANITY_CHECK_NAME in os.environ:
+      del os.environ[EMCC_SKIP_SANITY_CHECK_NAME]
     self.start_time = time.time()
 
   def tearDown(self):

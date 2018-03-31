@@ -7897,7 +7897,6 @@ int main() {
       if EMCC_SKIP_SANITY_CHECK_NAME in os.environ:
         # Cached sanity check result was for different configuration
         del os.environ[EMCC_SKIP_SANITY_CHECK_NAME]
-        check_sanity(force=True)
 
       for args in [[], ['-O1'], ['-O2'], ['-O3'], ['-Os'], ['-Oz']]:
         print(args)
