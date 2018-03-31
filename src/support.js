@@ -170,9 +170,23 @@ function loadWebAssemblyModule(binary) {
   var exports = {};
   for (var e in instance.exports) {
     var value = instance.exports[e];
+    if (typeof value === 'object') {
+      // a breaking change in the wasm spec, globals are now objects
+      // https://github.com/WebAssembly/mutable-global/issues/1
+      value = value.value;
+    }
     if (typeof value === 'number') {
       // relocate it - modules export the absolute value, they can't relocate before they export
-      value = value + env['memoryBase'];
+#if EMULATED_FUNCTION_POINTERS
+      // it may be a function pointer
+      if (e.substr(0, 3) == 'fp$' && typeof instance.exports[e.substr(3)] === 'function') {
+        value = value + env['tableBase'];
+      } else {
+#endif
+        value = value + env['memoryBase'];
+#if EMULATED_FUNCTION_POINTERS
+      }
+#endif
     }
     exports[e] = value;
   }
@@ -246,20 +260,45 @@ Module['registerFunctions'] = registerFunctions;
 #endif // RELOCATABLE
 #endif // EMULATED_FUNCTION_POINTERS
 
+#if WASM_BACKEND_WITH_RESERVED_FUNCTION_POINTERS
+var jsCallStartIndex = {{{ JSCALL_START_INDEX }}};
+var jsCallSigOrder = {{{ JSON.stringify(JSCALL_SIG_ORDER) }}};
+var jsCallNumSigs = Object.keys(jsCallSigOrder).length;
+var functionPointers = new Array(jsCallNumSigs * {{{ RESERVED_FUNCTION_POINTERS }}});
+#else // WASM_BACKEND_WITH_RESERVED_FUNCTION_POINTERS == 0
+var jsCallStartIndex = 1;
 var functionPointers = new Array({{{ RESERVED_FUNCTION_POINTERS }}});
+#endif // WASM_BACKEND_WITH_RESERVED_FUNCTION_POINTERS
 
-function addFunction(func) {
+// 'sig' parameter is only used on LLVM wasm backend
+function addFunction(func, sig) {
+#if WASM_BACKEND
+  assert(typeof sig !== 'undefined',
+         'Second argument of addFunction should be a wasm function signature ' +
+         'string');
+#endif // WASM_BACKEND
+#if ASSERTIONS
+  if (typeof sig === 'undefined') {
+    Module.printErr('Warning: addFunction: Provide a wasm function signature ' +
+                    'string as a second argument');
+  }
+#endif // ASSERTIONS
 #if EMULATED_FUNCTION_POINTERS == 0
-  for (var i = 0; i < functionPointers.length; i++) {
+#if WASM_BACKEND_WITH_RESERVED_FUNCTION_POINTERS
+  var base = jsCallSigOrder[sig] * {{{ RESERVED_FUNCTION_POINTERS }}};
+#else // WASM_BACKEND_WITH_RESERVED_FUNCTION_POINTERS == 0
+  var base = 0;
+#endif // WASM_BACKEND_WITH_RESERVED_FUNCTION_POINTERS
+  for (var i = base; i < base + {{{ RESERVED_FUNCTION_POINTERS }}}; i++) {
     if (!functionPointers[i]) {
       functionPointers[i] = func;
-      return 1 + i;
+      return jsCallStartIndex + i;
     }
   }
   throw 'Finished up all reserved function pointers. Use a higher value for RESERVED_FUNCTION_POINTERS.';
 #else
 #if BINARYEN
-  // we can simply appent to the wasm table
+  // we can simply append to the wasm table
   var table = Module['wasmTable'];
   var ret = table.length;
   table.grow(1);
@@ -282,7 +321,7 @@ function addFunction(func) {
 
 function removeFunction(index) {
 #if EMULATED_FUNCTION_POINTERS == 0
-  functionPointers[index-1] = null;
+  functionPointers[index-jsCallStartIndex] = null;
 #else
   alignFunctionTables(); // XXX we should rely on this being an invariant
   var tables = getFunctionTables();

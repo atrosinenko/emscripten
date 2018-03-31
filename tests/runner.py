@@ -155,6 +155,7 @@ use_all_engines = os.environ.get('EM_ALL_ENGINES') # generally js engines are eq
 
 class RunnerCore(unittest.TestCase):
   emcc_args = None
+  temp_dir = TEMP_DIR
   save_dir = os.environ.get('EM_SAVE_DIR')
   save_JS = 0
   stderr_redirect = STDOUT # This avoids cluttering the test runner output, which is stderr too, with compiler warnings etc.
@@ -184,18 +185,24 @@ class RunnerCore(unittest.TestCase):
       # side modules handle memory differently; binaryen puts the memory in the wasm module
       return ('-O2' in self.emcc_args or '-O3' in self.emcc_args or '-Oz' in self.emcc_args) and not (Settings.SIDE_MODULE or Settings.BINARYEN)
 
+  def set_temp_dir(self, temp_dir):
+    self.temp_dir = temp_dir
+    self.canonical_temp_dir = get_canonical_temp_dir(self.temp_dir)
+    # Explicitly set dedicated temporary directory for parallel tests
+    os.environ['EMCC_TEMP_DIR'] = self.temp_dir
+
   def setUp(self):
     Settings.reset()
 
     if self.EM_TESTRUNNER_DETECT_TEMPFILE_LEAKS:
-      for root, dirnames, filenames in os.walk(TEMP_DIR):
+      for root, dirnames, filenames in os.walk(self.temp_dir):
         for dirname in dirnames: self.temp_files_before_run.append(os.path.normpath(os.path.join(root, dirname)))
         for filename in filenames: self.temp_files_before_run.append(os.path.normpath(os.path.join(root, filename)))
 
     self.banned_js_engines = []
     self.use_all_engines = use_all_engines
     if not self.save_dir:
-      dirname = tempfile.mkdtemp(prefix='emscripten_test_' + self.__class__.__name__ + '_', dir=TEMP_DIR)
+      dirname = tempfile.mkdtemp(prefix='emscripten_test_' + self.__class__.__name__ + '_', dir=self.temp_dir)
     else:
       dirname = CANONICAL_TEMP_DIR
     if not os.path.exists(dirname):
@@ -224,11 +231,16 @@ class RunnerCore(unittest.TestCase):
 
       if self.EM_TESTRUNNER_DETECT_TEMPFILE_LEAKS and not os.environ.get('EMCC_DEBUG'):
         temp_files_after_run = []
-        for root, dirnames, filenames in os.walk(TEMP_DIR):
+        for root, dirnames, filenames in os.walk(self.temp_dir):
           for dirname in dirnames: temp_files_after_run.append(os.path.normpath(os.path.join(root, dirname)))
           for filename in filenames: temp_files_after_run.append(os.path.normpath(os.path.join(root, filename)))
 
-        left_over_files = list(set(temp_files_after_run) - set(self.temp_files_before_run))
+        # Our leak detection will pick up *any* new temp files in the temp dir. They may not be due to
+        # us, but e.g. the browser when running browser tests. Until we figure out a proper solution,
+        # ignore some temp file names that we see on our CI infrastructure.
+        ignorable_files = ['/tmp/tmpaddon']
+
+        left_over_files = list(set(temp_files_after_run) - set(self.temp_files_before_run) - set(ignorable_files))
         if len(left_over_files) > 0:
           print('ERROR: After running test, there are ' + str(len(left_over_files)) + ' new temporary files/directories left behind:', file=sys.stderr)
           for f in left_over_files:
@@ -729,13 +741,12 @@ def harness_server_func(q, port):
       s.send_header("Content-type", "text/html")
       s.end_headers()
       if s.path == '/run_harness':
-        s.wfile.write(open(path_from_root('tests', 'browser_harness.html')).read())
+        s.wfile.write(open(path_from_root('tests', 'browser_harness.html'), 'rb').read())
       else:
-        result = 'False'
+        result = b'False'
         if not q.empty():
           result = q.get()
         s.wfile.write(result)
-      s.wfile.close()
     def log_request(code=0, size=0):
       # don't log; too noisy
       pass
@@ -756,7 +767,7 @@ def server_func(dir, q, port):
         self.send_header('Connection','close')
         self.send_header('Expires','-1')
         self.end_headers()
-        self.wfile.write('OK')
+        self.wfile.write(b'OK')
       else:
         # Use SimpleHTTPServer default file serving operation for GET.
         SimpleHTTPRequestHandler.do_GET(self)
@@ -820,7 +831,7 @@ class BrowserCore(RunnerCore):
             time.sleep(1)
         else:
           raise Exception('[Test harness server failed to start up in a timely manner]')
-        self.harness_queue.put('http://localhost:%s/%s' % (self.test_port, html_file))
+        self.harness_queue.put(asbytes('http://localhost:%s/%s' % (self.test_port, html_file)))
         output = '[no http server activity]'
         start = time.time()
         if timeout is None: timeout = self.browser_timeout
@@ -983,7 +994,7 @@ class BrowserCore(RunnerCore):
       if not manual_reference:
         args = args + ['--pre-js', 'reftest.js', '-s', 'GL_TESTING=1']
     all_args = [PYTHON, EMCC, '-s', 'IN_TEST_HARNESS=1', temp_filepath, '-o', outfile] + args
-    #print 'all args:', all_args
+    #print('all args:', all_args)
     try_delete(outfile)
     Popen(all_args).communicate()
     assert os.path.exists(outfile)
@@ -1280,7 +1291,7 @@ def flattened_tests(loaded_tests):
   return tests
 
 def suite_for_module(module, tests):
-  suite_supported = module.__name__ == 'test_core'
+  suite_supported = module.__name__ in ('test_core', 'test_other')
   has_multiple_tests = len(tests) > 1
   has_multiple_cores = parallel_runner.num_cores() > 1
   if suite_supported and has_multiple_tests and has_multiple_cores:

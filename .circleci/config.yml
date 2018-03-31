@@ -4,6 +4,7 @@ defaults: &defaults
       environment:
         LANG: C.UTF-8
         EMSCRIPTEN_ALLOW_NEWER_PYTHON: 1
+        EM_TESTRUNNER_DETECT_TEMPFILE_LEAKS: 1
   working_directory: ~/
 
 test-defaults: &test-defaults
@@ -17,7 +18,7 @@ test-defaults: &test-defaults
 
     - run: |
         apt-get update
-        apt-get install -y python3 python3-pip cmake build-essential openjdk-9-jre-headless
+        apt-get install -y python3 python3-pip cmake build-essential openjdk-9-jre-headless $TEST_DEPENDENCY
         pip3 install --upgrade pip
         pip3 install lit
         EMCC_CORES=4 python3 emscripten/tests/runner.py $TEST_TARGET
@@ -43,6 +44,8 @@ jobs:
           echo BINARYEN_ROOT="''" >> .emscripten
           EMCC_CORES=4 python3 emscripten/embuilder.py build ALL
           python3 emscripten/tests/runner.py test_hello_world
+          mkdir tmp-firefox-profile/
+          echo 'user_pref("javascript.options.shared_memory", true);' >> tmp-firefox-profile/user.js
 
       - persist_to_workspace:
           # Must be an absolute path, or relative path from working_directory
@@ -53,23 +56,22 @@ jobs:
             - .emscripten_cache/
             - .emscripten_ports/
             - .emscripten
+            - tmp-firefox-profile/
 
-  test-other-am:
+  test-other:
     <<: *test-defaults
     environment:
-      - TEST_TARGET=other.test_a* other.test_b* other.test_c* other.test_d* other.test_e* other.test_f* other.test_g* other.test_h* other.test_i* other.test_j* other.test_k* other.test_l* other.test_m* skip:other.test_bad_triple skip:other.test_emcc_v
-      # TODO: remove skips after fastcomp update on travis for 1.37.23
-
-  test-other-nz:
-    <<: *test-defaults
-    environment:
-      - TEST_TARGET=other.test_n* other.test_o* other.test_p* other.test_q* other.test_r* other.test_s* other.test_t* other.test_u* other.test_v* other.test_w* other.test_x* other.test_y* other.test_z* skip:other.test_native_link_error_message
-      # TODO: remove skips after fastcomp update on travis for 1.37.23
+      - TEST_TARGET=other skip:other.test_bad_triple skip:other.test_native_link_error_message skip:other.test_emcc_v skip:other.test_failing_alloc
+      # some native-dependent tests fail because of the lack of native headers on emsdk-bundled clang
+      # CircleCI actively kills memory-over-consuming process
   test-browser:
     <<: *test-defaults
     environment:
-      - TEST_TARGET=browser
-      - EMSCRIPTEN_BROWSER=0
+      # browser.test_sdl_ttf_render_text_solid depends on Arial from Microsoft
+      - TEST_TARGET=browser skip:browser.test_sdl_ttf_render_text_solid
+      - TEST_DEPENDENCY=firefox
+      - EMSCRIPTEN_BROWSER=firefox -headless -profile tmp-firefox-profile/
+      - EM_LACKS_HARDWARE_ACCESS=1
   test-ab:
     <<: *test-defaults
     environment:
@@ -127,6 +129,10 @@ jobs:
     <<: *test-defaults
     environment:
       - TEST_TARGET=binaryen3
+  test-sanity:
+    <<: *test-defaults
+    environment:
+      - TEST_TARGET=sanity
 
 workflows:
   version: 2
@@ -134,10 +140,7 @@ workflows:
   build-test:
     jobs:
       - build
-      - test-other-am:
-          requires:
-            - build
-      - test-other-nz:
+      - test-other:
           requires:
             - build
       - test-browser:
@@ -185,3 +188,7 @@ workflows:
       - test-binaryen3:
           requires:
             - build
+      - test-sanity:
+          requires:
+            - build
+

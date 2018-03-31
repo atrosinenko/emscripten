@@ -448,7 +448,6 @@ LibraryManager.library = {
     var oldDynamicTopOnChange = 0;
     var newDynamicTop = 0;
     var totalMemory = 0;
-    increment = ((increment + 15) & -16)|0;
 #if USE_PTHREADS
     totalMemory = getTotalMemory()|0;
 
@@ -1453,12 +1452,6 @@ LibraryManager.library = {
     return '(' + val + ')';
   },
 
-  llvm_lifetime_start: function() {},
-  llvm_lifetime_end: function() {},
-
-  llvm_invariant_start: function() {},
-  llvm_invariant_end: function() {},
-
   llvm_objectsize_i32: function() { return -1 }, // TODO: support this
 
   llvm_dbg_declare__inline: function() { throw 'llvm_debug_declare' }, // avoid warning
@@ -1578,8 +1571,6 @@ LibraryManager.library = {
   llvm_ceil_f64: 'Math_ceil',
   llvm_floor_f32: 'Math_floor',
   llvm_floor_f64: 'Math_floor',
-  llvm_round_f32: 'Math_round',
-  llvm_round_f64: 'Math_round',
   llvm_minnum_f32: 'Math_min',
   llvm_minnum_f64: 'Math_min',
   llvm_maxnum_f32: 'Math_max',
@@ -1616,10 +1607,66 @@ LibraryManager.library = {
   },
 
   roundf__asm: true,
-  roundf__sig: 'dd',
-  roundf: function(f) {
+  roundf__sig: 'ff',
+  roundf: function(d) {
+    d = +d;
+    return d >= +0 ? +Math_floor(d + +0.5) : +Math_ceil(d - +0.5);
+  },
+
+  llvm_round_f64__asm: true,
+  llvm_round_f64__sig: 'dd',
+  llvm_round_f64: function(d) {
+    d = +d;
+    return d >= +0 ? +Math_floor(d + +0.5) : +Math_ceil(d - +0.5);
+  },
+
+  llvm_round_f32__asm: true,
+  llvm_round_f32__sig: 'ff',
+  llvm_round_f32: function(f) {
     f = +f;
     return f >= +0 ? +Math_floor(f + +0.5) : +Math_ceil(f - +0.5); // TODO: use fround?
+  },
+
+  rintf__asm: true,
+  rintf__sig: 'ff',
+  rintf__deps: ['round'],
+  rintf: function(f) {
+    f = +f;
+    return (f - +Math_floor(f) != .5) ? +_round(f) : +_round(f / +2) * +2;
+  },
+
+  // TODO: fround?
+  llvm_rint_f32__asm: true,
+  llvm_rint_f32__sig: 'ff',
+  llvm_rint_f32__deps: ['roundf'],
+  llvm_rint_f32: function(f) {
+    f = +f;
+    return (f - +Math_floor(f) != .5) ? +_roundf(f) : +_roundf(f / +2) * +2;
+  },
+
+  llvm_rint_f64__asm: true,
+  llvm_rint_f64__sig: 'dd',
+  llvm_rint_f64__deps: ['round'],
+  llvm_rint_f64: function(f) {
+    f = +f;
+    return (f - +Math_floor(f) != .5) ? +_round(f) : +_round(f / +2) * +2;
+  },
+
+  // TODO: fround?
+  llvm_nearbyint_f32__asm: true,
+  llvm_nearbyint_f32__sig: 'ff',
+  llvm_nearbyint_f32__deps: ['roundf'],
+  llvm_nearbyint_f32: function(f) {
+    f = +f;
+    return (f - +Math_floor(f) != .5) ? +_roundf(f) : +_roundf(f / +2) * +2;
+  },
+
+  llvm_nearbyint_f64__asm: true,
+  llvm_nearbyint_f64__sig: 'dd',
+  llvm_nearbyint_f64__deps: ['round'],
+  llvm_nearbyint_f64: function(f) {
+    f = +f;
+    return (f - +Math_floor(f) != .5) ? +_round(f) : +_round(f / +2) * +2;
   },
 
   _reallyNegative: function(x) {
@@ -1693,7 +1740,6 @@ LibraryManager.library = {
     if (filename === '__self__') {
       var handle = -1;
       var lib_module = Module;
-      var cached_functions = {};
     } else {
       var target = FS.findObject(filename);
       if (!target || target.isFolder || target.isDevice) {
@@ -1755,14 +1801,11 @@ LibraryManager.library = {
           }
         }
       }
-
-      var cached_functions = {};
     }
     DLFCN.loadedLibs[handle] = {
       refcount: 1,
       name: filename,
-      module: lib_module,
-      cached_functions: cached_functions
+      module: lib_module
     };
     DLFCN.loadedLibNames[filename] = handle;
 
@@ -1805,19 +1848,35 @@ LibraryManager.library = {
     } else {
       var lib = DLFCN.loadedLibs[handle];
       symbol = '_' + symbol;
-      if (lib.cached_functions.hasOwnProperty(symbol)) {
-        return lib.cached_functions[symbol];
-      }
       if (!lib.module.hasOwnProperty(symbol)) {
         DLFCN.errorMsg = ('Tried to lookup unknown symbol "' + symbol +
                                '" in dynamic lib: ' + lib.name);
         return 0;
       } else {
         var result = lib.module[symbol];
-        if (typeof result == 'function') {
-          result = addFunction(result);
-          //Module.printErr('adding function dlsym result for ' + symbol + ' => ' + result);
-          lib.cached_functions = result;
+        if (typeof result === 'function') {
+#if WASM
+#if EMULATED_FUNCTION_POINTERS
+          // for wasm with emulated function pointers, the i64 ABI is used for all
+          // function calls, so we can't just call addFunction on something JS
+          // can call (which does not use that ABI), as the function pointer would
+          // not be usable from wasm. instead, the wasm has exported function pointers
+          // for everything we need, with prefix fp$, use those
+          result = lib.module['fp$' + symbol];
+          if (typeof result === 'object') {
+            // a breaking change in the wasm spec, globals are now objects
+            // https://github.com/WebAssembly/mutable-global/issues/1
+            result = result.value;
+          }
+#if ASSERTIONS
+          assert(typeof result === 'number', 'could not find function pointer for ' + symbol);
+#endif // ASSERTIONS
+          return result;
+#endif // EMULATED_FUNCTION_POINTERS
+#endif // WASM
+          // convert the exported function into a function pointer using our generic
+          // JS mechanism.
+          return addFunction(result);
         }
         return result;
       }
@@ -1846,10 +1905,10 @@ LibraryManager.library = {
   dladdr: function(addr, info) {
     // report all function pointers as coming from this program itself XXX not really correct in any way
     var fname = allocate(intArrayFromString(Module['thisProgram'] || './this.program'), 'i8', ALLOC_NORMAL); // XXX leak
-    {{{ makeSetValue('addr', 0, 'fname', 'i32') }}};
-    {{{ makeSetValue('addr', QUANTUM_SIZE, '0', 'i32') }}};
-    {{{ makeSetValue('addr', QUANTUM_SIZE*2, '0', 'i32') }}};
-    {{{ makeSetValue('addr', QUANTUM_SIZE*3, '0', 'i32') }}};
+    {{{ makeSetValue('info', 0, 'fname', 'i32') }}};
+    {{{ makeSetValue('info', QUANTUM_SIZE, '0', 'i32') }}};
+    {{{ makeSetValue('info', QUANTUM_SIZE*2, '0', 'i32') }}};
+    {{{ makeSetValue('info', QUANTUM_SIZE*3, '0', 'i32') }}};
     return 1;
   },
 
@@ -2084,7 +2143,12 @@ LibraryManager.library = {
     if (_tzset.called) return;
     _tzset.called = true;
 
-    {{{ makeSetValue(makeGlobalUse('_timezone'), '0', '-(new Date()).getTimezoneOffset() * 60', 'i32') }}};
+    // timezone is specified as seconds west of UTC ("The external variable
+    // `timezone` shall be set to the difference, in seconds, between
+    // Coordinated Universal Time (UTC) and local standard time."), the same
+    // as returned by getTimezoneOffset().
+    // See http://pubs.opengroup.org/onlinepubs/009695399/functions/tzset.html
+    {{{ makeSetValue(makeGlobalUse('_timezone'), '0', '(new Date()).getTimezoneOffset() * 60', 'i32') }}};
 
     var winter = new Date(2000, 0, 1);
     var summer = new Date(2000, 6, 1);
@@ -3979,6 +4043,11 @@ LibraryManager.library = {
                                "    var t = process['hrtime']();\n" +
                                "    return t[0] * 1e3 + t[1] / 1e6;\n" +
                                "  };\n" +
+#if USE_PTHREADS
+// Pthreads need their clocks synchronized to the execution of the main thread, so give them a special form of the function.
+                               "} else if (ENVIRONMENT_IS_PTHREAD) {\n" +
+                               "  _emscripten_get_now = function() { return performance['now']() - __performance_now_clock_drift; };\n" +
+#endif
                                "} else if (typeof dateNow !== 'undefined') {\n" +
                                "  _emscripten_get_now = dateNow;\n" +
                                "} else if (typeof self === 'object' && self['performance'] && typeof self['performance']['now'] === 'function') {\n" +

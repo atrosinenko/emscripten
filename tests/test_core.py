@@ -39,6 +39,21 @@ def no_wasm_backend(note=''):
     return skip_if(f, 'is_wasm_backend', note)
   return decorated
 
+def no_linux(note=''):
+  def decorated(f):
+    return skip_if(f, 'is_linux', note)
+  return decorated
+
+def no_macos(note=''):
+  def decorated(f):
+    return skip_if(f, 'is_macos', note)
+  return decorated
+
+def no_windows(note=''):
+  def decorated(f):
+    return skip_if(f, 'is_windows', note)
+  return decorated
+
 # Async wasm compilation can't work in some tests, they are set up synchronously
 def sync(f):
   def decorated(self):
@@ -64,6 +79,12 @@ class T(RunnerCore): # Short name, to make it more fun to use manually on the co
     return 'SPLIT_MEMORY=' in str(self.emcc_args)
   def is_wasm(self):
     return 'BINARYEN' in str(self.emcc_args) or self.is_wasm_backend()
+  def is_linux(self):
+    return LINUX
+  def is_macos(self):
+    return MACOS
+  def is_windows(self):
+    return WINDOWS
 
   # Use closure in some tests for some additional coverage
   def maybe_closure(self):
@@ -75,26 +96,21 @@ class T(RunnerCore): # Short name, to make it more fun to use manually on the co
   def do_run_in_out_file_test(self, *path, **kwargs):
       test_path = path_from_root(*path)
 
-      def find_extension(*ext_list):
+      def find_files(*ext_list):
         ret = None
         count = 0
         for ext in ext_list:
           if os.path.isfile(test_path + ext):
-            ret = ext
+            ret = test_path + ext
             count += 1
-        if count == 0:
-          assert False, ("No file found at {} with extension {}"
-                         .format(test_path, ext_list))
-        if count > 1:
-          assert False, ("Test file {} found with multiple valid extensions {}"
-                         .format(test_path, ext_list))
+        assert count > 0, ("No file found at {} with extension {}"
+                           .format(test_path, ext_list))
+        assert count <= 1, ("Test file {} found with multiple valid extensions {}"
+                            .format(test_path, ext_list))
         return ret
 
-      input_extensions = find_extension('.c', '.cpp', '.cc')
-      output_extensions = find_extension('.out', '.txt')
-      extensions = (input_extensions, output_extensions)
-
-      src, output = (test_path + ext for ext in extensions)
+      src = find_files('.c', '.cpp', '.cc')
+      output = find_files('.out', '.txt')
       self.do_run_from_file(src, output, **kwargs)
 
   def test_hello_world(self):
@@ -231,7 +247,6 @@ class T(RunnerCore): # Short name, to make it more fun to use manually on the co
     # extra coverages
     for emulate_casts in [0, 1]:
       for emulate_fps in [0, 1, 2]:
-        if self.is_wasm() and emulate_casts and emulate_fps: continue # in wasm we can't do both
         print(emulate_casts, emulate_fps)
         Settings.EMULATE_FUNCTION_POINTER_CASTS = emulate_casts
         Settings.EMULATED_FUNCTION_POINTERS = emulate_fps
@@ -378,8 +393,6 @@ class T(RunnerCore): # Short name, to make it more fun to use manually on the co
   def test_align_moar(self):
     self.emcc_args = self.emcc_args + ['-msse']
     def test():
-      # hardcoded addresses, for 2 common global_base values.
-      # this tracks if this ever changes by surprise. will need normal updates.
       self.do_run(r'''
 #include <xmmintrin.h>
 #include <stdio.h>
@@ -398,12 +411,10 @@ __m128 m;
 
 int main()
 {
-    printf("Alignment: %d addr: 0x%x\n", ((int)&v) % 16, (int)&v);
-    printf("Alignment: %d addr: 0x%x\n", ((int)&m) % 16, (int)&m);
+    printf("Alignment: %d\n", ((int)&v) % 16);
+    printf("Alignment: %d\n", ((int)&m) % 16);
 }
-    ''', ('Alignment: 0 addr: 0xb20\nAlignment: 0 addr: 0xb60\n',   # asmjs
-          'Alignment: 0 addr: 0xf10\nAlignment: 0 addr: 0xf50\n',   # asm2wasm
-          'Alignment: 0 addr: 0x410\nAlignment: 0 addr: 0x450\n',)) # wasm_backend
+    ''', 'Alignment: 0\nAlignment: 0\n')
 
     test()
     print('relocatable')
@@ -704,10 +715,29 @@ base align: 0, 0, 0, 0'''])
   '''
 
   def test_mallocstruct(self):
-      self.do_run(self.gen_struct_src.replace('{{gen_struct}}', '(S*)malloc(sizeof(S))').replace('{{del_struct}}', 'free'), '*51,62*')
+    self.do_run(self.gen_struct_src.replace('{{gen_struct}}', '(S*)malloc(sizeof(S))').replace('{{del_struct}}', 'free'), '*51,62*')
+
+  def test_emmalloc(self):
+    # in newer clang+llvm, the internal calls to malloc in emmalloc may be optimized under
+    # the assumption that they are external, so like in system_libs.py where we build
+    # malloc, we need to disable builtin here too
+    self.emcc_args += ['-fno-builtin']
+
+    def test():
+      self.do_run(open(path_from_root('system', 'lib', 'emmalloc.cpp')).read() + open(path_from_root('tests', 'core', 'test_emmalloc.cpp')).read(),
+                  open(path_from_root('tests', 'core', 'test_emmalloc.txt')).read())
+    print('normal')
+    test()
+    print('debug')
+    self.emcc_args += ['-DEMMALLOC_DEBUG']
+    test()
+    print('debug log')
+    self.emcc_args += ['-DEMMALLOC_DEBUG_LOG']
+    self.emcc_args += ['-DRANDOM_ITERS=130']
+    test()
 
   def test_newstruct(self):
-      self.do_run(self.gen_struct_src.replace('{{gen_struct}}', 'new S').replace('{{del_struct}}', 'delete'), '*51,62*')
+    self.do_run(self.gen_struct_src.replace('{{gen_struct}}', 'new S').replace('{{del_struct}}', 'delete'), '*51,62*')
 
   def test_addr_of_stacked(self):
     self.do_run_in_out_file_test('tests', 'core', 'test_addr_of_stacked')
@@ -1270,6 +1300,7 @@ int main() {
     self.do_run_in_out_file_test('tests', 'core', 'test_complex', force_c=True)
 
   def test_float_builtins(self):
+    # tests wasm_libc_rt
     if not self.is_wasm_backend(): return self.skip('no __builtin_fmin support in JSBackend')
     self.do_run_in_out_file_test('tests', 'core', 'test_float_builtins')
 
@@ -1661,13 +1692,8 @@ int main(int argc, char **argv) {
     self.do_run_in_out_file_test('tests', 'core', 'test_main_thread_async_em_asm', force_c=True)
 
   def test_em_asm_unicode(self):
-    self.do_run(r'''
-#include <emscripten.h>
-
-int main() {
-  EM_ASM( Module.print("hello world…") );
-}
-''', 'hello world…')
+    self.do_run_in_out_file_test('tests', 'core', 'test_em_asm_unicode')
+    self.do_run_in_out_file_test('tests', 'core', 'test_em_asm_unicode', force_c=True)
 
   def test_em_asm_unused_arguments(self):
     src = r'''
@@ -1691,6 +1717,10 @@ int main() {
   def test_em_asm_parameter_pack(self):
     Building.COMPILER_TEST_OPTS += ['-std=c++11']
     self.do_run_in_out_file_test('tests', 'core', 'test_em_asm_parameter_pack')
+
+  def test_em_js(self):
+    self.do_run_in_out_file_test('tests', 'core', 'test_em_js')
+    self.do_run_in_out_file_test('tests', 'core', 'test_em_js', force_c=True)
 
   def test_runtime_stacksave(self):
     src = open(path_from_root('tests', 'core', 'test_runtime_stacksave.c')).read()
@@ -2800,6 +2830,64 @@ def process(filename):
         func_ptr = (FUNCTYPE)dlsym(lib_handle, "myfunc");
         assert(func_ptr != NULL);
         assert(func_ptr(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) == 13);
+
+        puts("success");
+
+        return 0;
+      }
+      '''
+    Settings.EXPORTED_FUNCTIONS = ['_main', '_malloc']
+    self.do_run(src, 'success', force_c=True, post_build=self.dlfcn_post_build)
+
+  def test_dlfcn_info(self):
+    if not self.can_dlfcn(): return
+
+    self.prep_dlfcn_lib()
+    lib_src = '''
+      #include <stdio.h>
+
+      int myfunc(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j, int k, int l, int m) {
+        return 13;
+      }
+      '''
+    Settings.EXPORTED_FUNCTIONS = ['_myfunc']
+    dirname = self.get_dir()
+    filename = os.path.join(dirname, 'liblib.c')
+    self.build_dlfcn_lib(lib_src, dirname, filename)
+
+    self.prep_dlfcn_main()
+    src = '''
+      #include <assert.h>
+      #include <stdio.h>
+      #include <string.h>
+      #include <dlfcn.h>
+
+      typedef int (*FUNCTYPE)(int, int, int, int, int, int, int, int, int, int, int, int, int);
+
+      int main() {
+        void *lib_handle;
+        FUNCTYPE func_ptr;
+
+        lib_handle = dlopen("liblib.so", RTLD_NOW);
+        assert(lib_handle != NULL);
+
+        func_ptr = (FUNCTYPE)dlsym(lib_handle, "myfunc");
+        assert(func_ptr != NULL);
+        assert(func_ptr(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) == 13);
+
+        /* Verify that we don't corrupt func_ptr when calling dladdr.  */
+        Dl_info info;
+        memset(&info, 0, sizeof(info));
+        dladdr(func_ptr, &info);
+
+        assert(func_ptr != NULL);
+        assert(func_ptr(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) == 13);
+
+        /* Verify something useful lives in info.  */
+        assert(info.dli_fname != NULL);
+        assert(info.dli_fbase == NULL);
+        assert(info.dli_sname == NULL);
+        assert(info.dli_saddr == NULL);
 
         puts("success");
 
@@ -4594,7 +4682,7 @@ def process(filename):
         std::cout << "hello world\n"; // should work with strict mode
         EM_ASM(
           try {
-            FS.write('/dummy.txt', 'homu');
+            FS.readFile('/dummy.txt');
           } catch (err) {
             err.stack = err.stack; // should be writable
             throw err;
@@ -4602,7 +4690,13 @@ def process(filename):
         );
         return 0;
       }
-    ''', 'at Object.write', js_engines=js_engines, post_build=post) # engines has different error stack format
+    ''', 'at Object.readFile', js_engines=js_engines, post_build=post) # engines has different error stack format
+
+  @also_with_noderawfs
+  def test_fs_llseek(self, js_engines=None):
+    Settings.FORCE_FILESYSTEM = 1
+    src = open(path_from_root('tests', 'fs', 'test_llseek.c'), 'r').read()
+    self.do_run(src, 'success', force_c=True, js_engines=js_engines)
 
   def test_unistd_access(self):
     self.clear()
@@ -4613,7 +4707,7 @@ def process(filename):
       Building.COMPILER_TEST_OPTS = orig_compiler_opts + ['-D' + fs]
       self.do_run(src, expected, js_engines=[NODE_JS])
     # Node.js fs.chmod is nearly no-op on Windows
-    if not WINDOWS:
+    if not self.is_windows():
       Building.COMPILER_TEST_OPTS = orig_compiler_opts
       self.emcc_args += ['-s', 'NODERAWFS=1']
       self.do_run(src, expected, js_engines=[NODE_JS])
@@ -4664,7 +4758,7 @@ def process(filename):
       self.do_run(src, expected, js_engines=[NODE_JS])
 
   def test_unistd_truncate_noderawfs(self):
-    if WINDOWS:
+    if self.is_windows():
       return self.skip("Windows throws EPERM rather than EACCES or EINVAL")
     if not os.geteuid(): # 0 if root
       return self.skip("Root access invalidates this test by being able to write on readonly files")
@@ -4705,10 +4799,10 @@ def process(filename):
     for fs in ['MEMFS', 'NODEFS']:
       Building.COMPILER_TEST_OPTS = orig_compiler_opts + ['-D' + fs]
       # symlinks on node.js on Windows require administrative privileges, so skip testing those bits on that combination.
-      if WINDOWS and fs == 'NODEFS': Building.COMPILER_TEST_OPTS += ['-DNO_SYMLINK=1']
+      if self.is_windows() and fs == 'NODEFS': Building.COMPILER_TEST_OPTS += ['-DNO_SYMLINK=1']
       self.do_run(src, 'success', force_c=True, js_engines=[NODE_JS])
     # Several differences/bugs on Windows including https://github.com/nodejs/node/issues/18014
-    if not WINDOWS:
+    if not self.is_windows():
       Building.COMPILER_TEST_OPTS = orig_compiler_opts + ['-DNODERAWFS']
       if not os.geteuid(): # 0 if root
         Building.COMPILER_TEST_OPTS += ['-DSKIP_ACCESS_TESTS']
@@ -4721,7 +4815,7 @@ def process(filename):
     src = open(path_from_root('tests', 'unistd', 'links.c'), 'r').read()
     expected = open(path_from_root('tests', 'unistd', 'links.out'), 'r').read()
     for fs in ['MEMFS', 'NODEFS']:
-      if WINDOWS and fs == 'NODEFS':
+      if self.is_windows() and fs == 'NODEFS':
         print('Skipping NODEFS part of this test for test_unistd_links on Windows, since it would require administrative privileges.', file=sys.stderr)
         # Also, other detected discrepancies if you do end up running this test on NODEFS:
         # test expects /, but Windows gives \ as path slashes.
@@ -4731,7 +4825,7 @@ def process(filename):
       self.do_run(src, expected, js_engines=[NODE_JS])
 
   def test_unistd_symlink_on_nodefs(self):
-    if WINDOWS:
+    if self.is_windows():
       return self.skip('Skipping NODEFS part of this test for test_unistd_symlink_on_nodefs on Windows, since it would require administrative privileges.')
       # Also, other detected discrepancies if you do end up running this test on NODEFS:
       # test expects /, but Windows gives \ as path slashes.
@@ -4777,6 +4871,9 @@ def process(filename):
 
   def test_uname(self):
     self.do_run_in_out_file_test('tests', 'core', 'test_uname')
+
+  def test_unary_literal(self):
+    self.do_run_in_out_file_test('tests', 'core', 'test_unary_literal')
 
   def test_env(self):
     src = open(path_from_root('tests', 'env', 'src.c'), 'r').read()
@@ -5038,6 +5135,8 @@ int main(void) {
     self.do_run(open(path_from_root('tests', 'whets.cpp')).read(), 'Single Precision C Whetstone Benchmark')
 
   def test_dlmalloc(self):
+    Settings.MALLOC = "dlmalloc"
+
     self.banned_js_engines = [NODE_JS] # slower, and fail on 64-bit
     Settings.TOTAL_MEMORY = 128*1024*1024 # needed with typed arrays
 
@@ -5466,7 +5565,7 @@ return malloc(size);
                             os.path.join('objs', '.libs', 'libfreetype.a'))
 
   def test_freetype(self):
-    if WINDOWS: return self.skip('test_freetype uses a ./configure script to build and therefore currently only runs on Linux and OS X.')
+    if self.is_windows(): return self.skip('test_freetype uses a ./configure script to build and therefore currently only runs on Linux and macOS.')
     assert 'asm2g' in test_modes
     if self.run_name == 'asm2g':
       Settings.ALIASING_FUNCTION_POINTERS = 1 - Settings.ALIASING_FUNCTION_POINTERS # flip for some more coverage here
@@ -5555,7 +5654,7 @@ def process(filename):
     if self.run_name == 'asm2g':
       self.emcc_args += ['-g4'] # more source maps coverage
 
-    use_cmake_configure = WINDOWS
+    use_cmake_configure = self.is_windows()
     if use_cmake_configure:
       make_args = []
       configure = [PYTHON, path_from_root('emcmake'), 'cmake', '.', '-DBUILD_SHARED_LIBS=OFF']
@@ -5577,7 +5676,7 @@ def process(filename):
     for use_cmake in [False, True]: # If false, use a configure script to configure Bullet build.
       print('cmake', use_cmake)
       # Windows cannot run configure sh scripts.
-      if WINDOWS and not use_cmake:
+      if self.is_windows() and not use_cmake:
         continue
 
       Settings.ASSERTIONS = 2 if use_cmake else asserts # extra testing for ASSERTIONS == 2
@@ -5608,7 +5707,7 @@ def process(filename):
 
   @sync
   def test_poppler(self):
-    if WINDOWS: return self.skip('test_poppler depends on freetype, which uses a ./configure script to build and therefore currently only runs on Linux and OS X.')
+    if self.is_windows(): return self.skip('test_poppler depends on freetype, which uses a ./configure script to build and therefore currently only runs on Linux and macOS.')
 
     def test():
       Building.COMPILER_TEST_OPTS += [
@@ -5758,42 +5857,6 @@ def process(filename):
                    output_nicerizer=image_compare)#, build_ll_hook=self.do_autodebug)
 
     do_test()
-
-    # some test coverage for EMCC_DEBUG 1 and 2
-    assert 'asm2g' in test_modes
-    if self.run_name == 'asm2g':
-      shutil.copyfile('src.c.o.js', 'release.js')
-      try:
-        os.environ['EMCC_DEBUG'] = '1'
-        print('2')
-        do_test()
-        shutil.copyfile('src.c.o.js', 'debug1.js')
-        os.environ['EMCC_DEBUG'] = '2'
-        print('3')
-        do_test()
-        shutil.copyfile('src.c.o.js', 'debug2.js')
-      finally:
-        del os.environ['EMCC_DEBUG']
-      for debug in [1,2]:
-        def clean(text):
-          text = text.replace('\n\n', '\n').replace('\n\n', '\n').replace('\n\n', '\n').replace('\n\n', '\n').replace('\n\n', '\n').replace('{\n}', '{}')
-          return '\n'.join(sorted(text.split('\n')))
-        sizes = len(open('release.js').read()), len(open('debug%d.js' % debug).read())
-        print(debug, 'sizes', sizes, file=sys.stderr)
-        assert abs(sizes[0] - sizes[1]) < 0.001*sizes[0], sizes # we can't check on identical output, compilation is not 100% deterministic (order of switch elements, etc.), but size should be ~identical
-        print('debug check %d passed too' % debug, file=sys.stderr)
-
-      try:
-        os.environ['EMCC_FORCE_STDLIBS'] = '1'
-        print('EMCC_FORCE_STDLIBS')
-        do_test()
-      finally:
-        del os.environ['EMCC_FORCE_STDLIBS']
-      print('EMCC_FORCE_STDLIBS ok', file=sys.stderr)
-
-      try_delete(CANONICAL_TEMP_DIR)
-    else:
-      print('not doing debug check', file=sys.stderr)
 
     if Settings.ALLOW_MEMORY_GROWTH == 1: # extra testing
       print('no memory growth', file=sys.stderr)
@@ -6036,7 +6099,7 @@ def process(filename):
     self.do_run_in_out_file_test('tests', 'core', 'dyncall')
     # test dyncall (and other runtime methods in support.js) can be exported
     self.emcc_args += ['-DEXPORTED']
-    Settings.EXTRA_EXPORTED_RUNTIME_METHODS = ['dynCall', 'addFunction']
+    Settings.EXTRA_EXPORTED_RUNTIME_METHODS = ['dynCall', 'addFunction', 'lengthBytesUTF8']
     self.do_run_in_out_file_test('tests', 'core', 'dyncall')
 
   def test_dyncall_specific(self):
@@ -6332,7 +6395,6 @@ def process(filename):
     assert '_exported_func_from_response_file_1' in open('src.cpp.o.js').read()
 
   @sync
-  @no_wasm_backend('no jsCall function pointers are created for wasm backend')
   def test_add_function(self):
     Settings.INVOKE_RUN = 0
     Settings.RESERVED_FUNCTION_POINTERS = 1
@@ -6348,7 +6410,7 @@ def process(filename):
       Settings.RESERVED_FUNCTION_POINTERS = 0
       self.do_run(open(src).read(), '''Finished up all reserved function pointers. Use a higher value for RESERVED_FUNCTION_POINTERS.''')
       generated = open('src.cpp.o.js').read()
-      assert 'jsCall' not in generated
+      assert 'jsCall_' not in generated
       Settings.RESERVED_FUNCTION_POINTERS = 1
 
       Settings.ALIASING_FUNCTION_POINTERS = 1 - Settings.ALIASING_FUNCTION_POINTERS # flip the test
@@ -6388,11 +6450,12 @@ def process(filename):
     '''
     self.do_run(src, 'func1\nfunc2\n')
 
-  @no_wasm_backend('no implementation of emulated function pointer casts')
   def test_emulate_function_pointer_casts(self):
     Settings.EMULATE_FUNCTION_POINTER_CASTS = 1
 
-    self.do_run_in_out_file_test('tests', 'core', 'test_emulate_function_pointer_casts')
+    self.do_run(open(path_from_root('tests', 'core', 'test_emulate_function_pointer_casts.cpp')).read(),
+                ('|1.266,1|',                 # asm.js, double <-> int
+                 '|1.266,1413754136|')) # wasm, reinterpret the bits
 
   def test_demangle_stacks(self):
     Settings.DEMANGLE_SUPPORT = 1
@@ -6866,8 +6929,18 @@ Module.printErr = Module['printErr'] = function(){};
         # the file attribute is optional, but if it is present it needs to refer
         # the output file.
         self.assertPathsIdentical(map_referent, data['file'])
-      assert len(data['sources']) == 1, data['sources']
-      self.assertPathsIdentical(src_filename, data['sources'][0])
+      if not self.is_wasm_backend():
+        assert len(data['sources']) == 1, data['sources']
+        self.assertPathsIdentical(src_filename, data['sources'][0])
+      else:
+        # Wasm backend currently adds every file linked as part of compiler-rt
+        # to the 'sources' field.
+        # TODO(jgravelle): when LLD is the wasm-backend default, make sure it
+        # emits only the files we have lines for.
+        assert len(data['sources']) > 1, data['sources']
+        normalized_srcs = [src.replace('\\', '/') for src in data['sources']]
+        normalized_filename = src_filename.replace('\\', '/')
+        assert normalized_filename in normalized_srcs, "Source file not found"
       if hasattr(data, 'sourcesContent'):
         # the sourcesContent attribute is optional, but if it is present it
         # needs to containt valid source text.
@@ -6886,22 +6959,6 @@ Module.printErr = Module['printErr'] = function(){};
       assert seen_lines.issuperset([6, 7, 11, 12])
 
     build_and_check()
-
-    assert 'asm2g' in test_modes
-    if self.run_name == 'asm2g':
-      # EMCC_DEBUG=2 causes lots of intermediate files to be written, and so
-      # serves as a stress test for source maps because it needs to correlate
-      # line numbers across all those files.
-      old_emcc_debug = os.environ.get('EMCC_DEBUG', None)
-      os.environ.pop('EMCC_DEBUG', None)
-      try:
-        os.environ['EMCC_DEBUG'] = '2'
-        build_and_check()
-      finally:
-        if old_emcc_debug is not None:
-          os.environ['EMCC_DEBUG'] = old_emcc_debug
-        else:
-          os.environ.pop('EMCC_DEBUG', None)
 
   def test_modularize_closure_pre(self):
     emcc_args = self.emcc_args[:]

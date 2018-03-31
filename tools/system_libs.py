@@ -1,5 +1,5 @@
 from __future__ import print_function
-import os, json, logging, zipfile, glob, shutil
+import os, json, logging, zipfile, tarfile, glob, shutil
 from . import shared
 from subprocess import Popen, CalledProcessError
 import subprocess, multiprocessing, re
@@ -56,6 +56,7 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
   al_symbols = read_symbols(shared.path_from_root('system', 'lib', 'al.symbols'))
   compiler_rt_symbols = read_symbols(shared.path_from_root('system', 'lib', 'compiler-rt.symbols'))
   pthreads_symbols = read_symbols(shared.path_from_root('system', 'lib', 'pthreads.symbols'))
+  asmjs_pthreads_symbols = read_symbols(shared.path_from_root('system', 'lib', 'asmjs_pthreads.symbols'))
   wasm_libc_symbols = read_symbols(shared.path_from_root('system', 'lib', 'wasm-libc.symbols'))
   html5_symbols = read_symbols(shared.path_from_root('system', 'lib', 'html5.symbols'))
 
@@ -116,7 +117,7 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
     blacklist = set(
       ['ipc', 'passwd', 'thread', 'signal', 'sched', 'ipc', 'time', 'linux', 'aio', 'exit', 'legacy', 'mq', 'process', 'search', 'setjmp', 'env', 'ldso', 'conf'] + # musl modules
       ['memcpy.c', 'memset.c', 'memmove.c', 'getaddrinfo.c', 'getnameinfo.c', 'inet_addr.c', 'res_query.c', 'gai_strerror.c', 'proto.c', 'gethostbyaddr.c', 'gethostbyaddr_r.c', 'gethostbyname.c', 'gethostbyname2_r.c', 'gethostbyname_r.c', 'gethostbyname2.c', 'usleep.c', 'alarm.c', 'syscall.c', '_exit.c'] + # individual files
-      ['abs.c', 'cos.c', 'cosf.c', 'cosl.c', 'sin.c', 'sinf.c', 'sinl.c', 'tan.c', 'tanf.c', 'tanl.c', 'acos.c', 'acosf.c', 'acosl.c', 'asin.c', 'asinf.c', 'asinl.c', 'atan.c', 'atanf.c', 'atanl.c', 'atan2.c', 'atan2f.c', 'atan2l.c', 'exp.c', 'expf.c', 'expl.c', 'log.c', 'logf.c', 'logl.c', 'sqrt.c', 'sqrtf.c', 'sqrtl.c', 'fabs.c', 'fabsf.c', 'fabsl.c', 'ceil.c', 'ceilf.c', 'ceill.c', 'floor.c', 'floorf.c', 'floorl.c', 'pow.c', 'powf.c', 'powl.c', 'round.c', 'roundf.c'] # individual math files
+      ['abs.c', 'cos.c', 'cosf.c', 'cosl.c', 'sin.c', 'sinf.c', 'sinl.c', 'tan.c', 'tanf.c', 'tanl.c', 'acos.c', 'acosf.c', 'acosl.c', 'asin.c', 'asinf.c', 'asinl.c', 'atan.c', 'atanf.c', 'atanl.c', 'atan2.c', 'atan2f.c', 'atan2l.c', 'exp.c', 'expf.c', 'expl.c', 'log.c', 'logf.c', 'logl.c', 'sqrt.c', 'sqrtf.c', 'sqrtl.c', 'fabs.c', 'fabsf.c', 'fabsl.c', 'ceil.c', 'ceilf.c', 'ceill.c', 'floor.c', 'floorf.c', 'floorl.c', 'pow.c', 'powf.c', 'powl.c', 'round.c', 'roundf.c', 'rintf.c'] # individual math files
     )
     # TODO: consider using more math code from musl, doing so makes box2d faster
     for dirpath, dirnames, filenames in os.walk(musl_srcdir):
@@ -131,7 +132,11 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
               break
           if not cancel:
             libc_files.append(os.path.join(musl_srcdir, dirpath, f))
-    args = ['-Os']
+    # Without -fno-builtin, LLVM can optimize away or convert calls to library
+    # functions to something else based on assumptions that they behave exactly
+    # like the standard library. This can cause unexpected bugs when we use our
+    # custom standard library. The same for other libc/libm builds.
+    args = ['-Os', '-fno-builtin']
     if shared.Settings.USE_PTHREADS:
       args += ['-s', 'USE_PTHREADS=1']
       assert '-mt' in libname
@@ -180,6 +185,10 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
     pthreads_files += [os.path.join('pthread', 'library_pthread.c')]
     return build_libc(libname, pthreads_files, ['-O2', '-s', 'USE_PTHREADS=1'])
 
+  def create_pthreads_asmjs(libname):
+    pthreads_files = [os.path.join('pthread', 'library_pthread_asmjs.c')]
+    return build_libc(libname, pthreads_files, ['-O2', '-s', 'USE_PTHREADS=1'])
+
   def create_wasm_libc(libname):
     # in asm.js we just use Math.sin etc., which is good for code size. But
     # wasm doesn't have such builtins, so we need to bundle in more code
@@ -191,7 +200,7 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
                  'atan2.c', 'atan2f.c', 'atan2l.c', 'exp.c', 'expf.c', 'expl.c',
                  'log.c', 'logf.c', 'logl.c', 'pow.c', 'powf.c', 'powl.c'])
 
-    return build_libc(libname, files, ['-O2'])
+    return build_libc(libname, files, ['-O2', '-fno-builtin'])
 
   # libcxx
   def create_libcxx(libname):
@@ -288,30 +297,59 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
     shared.Building.emar('cr', in_temp(libname), o_s)
     return in_temp(libname)
 
-  def dlmalloc_name():
-    ret = 'dlmalloc'
+  # decides which malloc to use, and returns the source for malloc and the full library name
+  def malloc_decision():
+    if shared.Settings.MALLOC == 'dlmalloc':
+      base = 'dlmalloc'
+    elif shared.Settings.MALLOC == 'emmalloc':
+      base = 'emmalloc'
+    else:
+      raise Exception('malloc must be one of "emmalloc", "dlmalloc", see settings.js')
+    # only dlmalloc supports most modes
+    def require_dlmalloc(what):
+      if base != 'dlmalloc':
+        logging.error('only dlmalloc is possible when using %s' % what)
+        import sys
+        sys.exit(1)
+    extra = ''
     if shared.Settings.USE_PTHREADS:
-      ret += '_threadsafe'
+      extra += '_threadsafe'
+      require_dlmalloc('pthreads')
     if shared.Settings.EMSCRIPTEN_TRACING:
-      ret += '_tracing'
+      extra += '_tracing'
+      require_dlmalloc('tracing')
     if shared.Settings.SPLIT_MEMORY:
-      ret += '_split'
-    if shared.Settings.DEBUG_LEVEL:
-      ret += '_debug'
-    return ret
+      extra += '_split'
+      require_dlmalloc('split memory')
+    if shared.Settings.DEBUG_LEVEL >= 3:
+      extra += '_debug'
+    if base == 'dlmalloc':
+      source = 'dlmalloc.c'
+    elif base == 'emmalloc':
+      source = 'emmalloc.cpp'
+    return (source, base + extra)
 
-  def create_dlmalloc(out_name):
+  def malloc_source():
+    return malloc_decision()[0]
+
+  def malloc_name():
+    return malloc_decision()[1]
+
+  def create_malloc(out_name):
     o = in_temp(out_name)
-    cflags = ['-O2']
+    cflags = ['-O2', '-fno-builtin']
     if shared.Settings.USE_PTHREADS:
       cflags += ['-s', 'USE_PTHREADS=1']
     if shared.Settings.EMSCRIPTEN_TRACING:
       cflags += ['--tracing']
     if shared.Settings.SPLIT_MEMORY:
       cflags += ['-DMSPACES', '-DONLY_MSPACES']
-    if shared.Settings.DEBUG_LEVEL:
-      cflags += ['-DDLMALLOC_DEBUG']
-    check_call([shared.PYTHON, shared.EMCC, shared.path_from_root('system', 'lib', 'dlmalloc.c'), '-o', o] + cflags)
+    if shared.Settings.DEBUG_LEVEL >= 3:
+      cflags += ['-UNDEBUG', '-DDLMALLOC_DEBUG']
+      # TODO: consider adding -DEMMALLOC_DEBUG, but that is quite slow
+    else:
+      cflags += ['-DNDEBUG']
+    check_call([shared.PYTHON, shared.EMCC, shared.path_from_root('system', 'lib', malloc_source()), '-o', o] + cflags)
     if shared.Settings.SPLIT_MEMORY:
       split_malloc_o = in_temp('sm' + out_name)
       check_call([shared.PYTHON, shared.EMCC, shared.path_from_root('system', 'lib', 'split_malloc.cpp'), '-o', split_malloc_o, '-O2'])
@@ -323,14 +361,21 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
   def create_wasm_rt_lib(libname, files):
     o_s = []
     commands = []
+    # Output should be an object file with lld, otherwise text assembly
+    output_flag = '-c' if shared.Settings.EXPERIMENTAL_USE_LLD else '-S'
     for src in files:
       o = in_temp(os.path.basename(src) + '.o')
       # Use clang directly instead of emcc. Since emcc's intermediate format (produced by -S) is LLVM IR, there's no way to
       # get emcc to output wasm .s files, which is what we archive in compiler_rt.
       commands.append([
-        shared.CLANG_CC, '--target=wasm32', '-mthread-model', 'single',
-        '-S', shared.path_from_root('system', 'lib', src),
-        '-O2', '-o', o] + musl_internal_includes() + shared.EMSDK_OPTS)
+        shared.CLANG_CC,
+        '--target={}'.format(shared.WASM_TARGET),
+        '-mthread-model', 'single',
+        output_flag,
+        shared.path_from_root('system', 'lib', src),
+        '-O2', '-fno-builtin', '-o', o] +
+        musl_internal_includes() +
+        shared.EMSDK_OPTS)
       o_s.append(o)
     run_commands(commands)
     lib = in_temp(libname)
@@ -366,6 +411,9 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
         'fmin.c', 'fminf.c', 'fminl.c',
         'fmax.c', 'fmaxf.c', 'fmaxl.c',
         'fmod.c', 'fmodf.c', 'fmodl.c',
+        'log2.c', 'log2f.c', 'log10.c', 'log10f.c',
+        'exp2.c', 'exp2f.c', 'exp10.c', 'exp10f.c',
+        'scalbn.c',
       ])
     string_files = files_in_path(
       path_components=['system', 'lib', 'libc', 'musl', 'src', 'string'],
@@ -439,16 +487,18 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
                  ('al',            'bc', create_al,          al_symbols,          ['libc'],      False),
                  ('html5',         'bc', create_html5,       html5_symbols,       ['html5'],     False),
                  ('compiler-rt',   'a',  create_compiler_rt, compiler_rt_symbols, ['libc'],      False),
-                 (dlmalloc_name(), 'bc', create_dlmalloc,    [],                  [],            False)]
+                 (malloc_name(),   'bc', create_malloc,      [],                  [],            False)]
 
   if shared.Settings.USE_PTHREADS:
-    system_libs += [('libc-mt',       'bc', create_libc,       libc_symbols,     [],       False),
-                    ('pthreads',      'bc', create_pthreads,   pthreads_symbols, ['libc'], False)]
+    system_libs += [('libc-mt',        'bc', create_libc,           libc_symbols,     [],       False),
+                    ('pthreads',       'bc', create_pthreads,       pthreads_symbols, ['libc'], False),
+                    ('pthreads_asmjs', 'bc', create_pthreads_asmjs, asmjs_pthreads_symbols, ['libc'], False)]
     force.add('pthreads')
+    force.add('pthreads_asmjs')
   else:
     system_libs += [('libc', 'bc', create_libc, libc_symbols, [], False)]
 
-  force.add(dlmalloc_name())
+  force.add(malloc_name())
 
   # if building to wasm, we need more math code, since we have less builtins
   if shared.Settings.BINARYEN:
@@ -572,7 +622,7 @@ class Ports(object):
   name_cache = set()
 
   @staticmethod
-  def fetch_project(name, url, subdir):
+  def fetch_project(name, url, subdir, is_tarbz2=False):
     fullname = os.path.join(Ports.get_dir(), name)
 
     if name not in Ports.name_cache: # only mention each port once in log
@@ -623,21 +673,26 @@ class Ports(object):
         from urllib2 import urlopen
       f = urlopen(url)
       data = f.read()
-      open(fullname + '.zip', 'wb').write(data)
+      open(fullname + ('.zip' if not is_tarbz2 else '.tar.bz2'), 'wb').write(data)
       State.retrieved = True
 
     def check_tag():
-      z = zipfile.ZipFile(fullname + '.zip', 'r')
-      names = z.namelist()
-      if not (names[0].startswith(subdir + '/') or names[0].startswith(subdir + '\\')):
-        # current zip file is old, force a retrieve
-        return False
-      return True
+      if is_tarbz2:
+        names = tarfile.open(fullname + '.tar.bz2', 'r:bz2').getnames()
+      else:
+        names = zipfile.ZipFile(fullname + '.zip', 'r').namelist()
+
+      # check if first entry of the archive is prefixed with the same
+      # tag as we need so no longer download and recompile if so
+      return bool(re.match(subdir + r'(\\|/|$)', names[0]))
 
     def unpack():
       logging.warning('unpacking port: ' + name)
       shared.safe_ensure_dirs(fullname)
-      z = zipfile.ZipFile(fullname + '.zip', 'r')
+      if is_tarbz2:
+        z = tarfile.open(fullname + '.tar.bz2', 'r:bz2')
+      else:
+        z = zipfile.ZipFile(fullname + '.zip', 'r')
       try:
         cwd = os.getcwd()
         os.chdir(fullname)
