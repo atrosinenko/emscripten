@@ -55,7 +55,7 @@ class sanity(RunnerCore):
   def tearDownClass(self):
     super(RunnerCore, self).tearDownClass()
     # Restore cached sanity check result
-    check_sanity(force=True)
+    check_sanity()
 
   def setUp(self):
     wipe()

@@ -485,7 +485,8 @@ EMCC_SKIP_SANITY_CHECK_NAME = 'EMCC_SKIP_SANITY_CHECK'
 def check_sanity(force=False):
   ToolchainProfiler.enter_block('sanity')
   try:
-    if os.environ.get(EMCC_SKIP_SANITY_CHECK_NAME) == '1':
+    skip_var = os.environ.get(EMCC_SKIP_SANITY_CHECK_NAME)
+    if (skip_var == '1' and not force) or skip_var == '2':
       return
     os.environ[EMCC_SKIP_SANITY_CHECK_NAME] = '1'
 

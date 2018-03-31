@@ -195,7 +195,7 @@ class RunnerCore(unittest.TestCase):
   def setUpClass(self):
     super(unittest.TestCase, self).setUpClass()
     # Cache the sanity check results
-    check_sanity(force=True)
+    check_sanity()
 
   def setUp(self):
     Settings.reset()
