@@ -193,7 +193,7 @@ class RunnerCore(unittest.TestCase):
 
   @classmethod
   def setUpClass(self):
-    super(unittest.TestCase, self).setUpClass()
+    super(RunnerCore, self).setUpClass()
     # Cache the sanity check results
     check_sanity()
 
